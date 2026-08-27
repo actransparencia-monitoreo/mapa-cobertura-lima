@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Monitor de cobertura de observación — Lima</title>
+
+<!-- MapLibre GL JS: motor de mapas open source. Sin token, sin cuenta. -->
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+
+<style>
+  :root {
+    /* Paleta S7 — contrato del proyecto. No cambiar sin actualizar el HANDOFF. */
+    --c-cubierto:    #00AF5A;
+    --c-excedente:   #00A0F8;
+    --c-no-cubierto: #FF0000;
+    --c-parcial:     #FFEC05;
+
+    --fondo:   #0e0e10;
+    --panel:   #17171b;
+    --borde:   #2a2a30;
+    --texto:   #e8e8ea;
+    --tenue:   #8b8b94;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--fondo); color: var(--texto);
+  }
+
+  #mapa { position: absolute; inset: 0; }
+
+  /* ── Panel lateral ───────────────────────────────────────────── */
+  #panel {
+    position: absolute; top: 0; left: 0; bottom: 0;
+    width: 320px; padding: 20px;
+    background: var(--panel);
+    border-right: 1px solid var(--borde);
+    overflow-y: auto;
+    z-index: 2;
+  }
+
+  #panel h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 4px; line-height: 1.3; }
+  #panel .sub { font-size: 0.78rem; color: var(--tenue); margin: 0 0 20px; }
+
+  /* Aviso de datos viejos. Ambar de INTERFAZ, no de la paleta S7: aquella
+     significa estados de cobertura y reusarla aqui haria que un color del
+     contrato dijera dos cosas distintas. */
+  #actualizado.viejo { color: #e0a030; font-weight: 600; }
+
+  /* ── Pie ─────────────────────────────────────────────────────── */
+  #pie {
+    margin-top: 26px; padding-top: 14px;
+    border-top: 1px solid var(--borde);
+    font-size: 0.72rem; line-height: 1.5; color: var(--tenue);
+  }
+  #pie strong { color: var(--texto); font-weight: 600; }
+
+  .seccion { margin-bottom: 22px; }
+  .seccion h2 {
+    font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--tenue);
+    margin: 0 0 10px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--borde);
+  }
+
+  /* ── Contadores ──────────────────────────────────────────────── */
+  #global {
+    font-size: 2rem; font-weight: 650; line-height: 1;
+    margin-bottom: 2px;
+  }
+  #global-sub { font-size: 0.75rem; color: var(--tenue); margin-bottom: 16px; }
+
+  .fila {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 0; font-size: 0.83rem;
+  }
+  .punto {
+    width: 11px; height: 11px; border-radius: 50%;
+    border: 1.5px solid #261A10; flex-shrink: 0;
+  }
+  .fila .etiqueta { flex: 1; color: var(--tenue); }
+  .fila .valor { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+  /* ── Filtro ──────────────────────────────────────────────────── */
+  select {
+    width: 100%; padding: 8px 10px;
+    background: #0e0e10; color: var(--texto);
+    border: 1px solid var(--borde); border-radius: 6px;
+    font-size: 0.85rem; font-family: inherit;
+  }
+  select:focus { outline: none; border-color: #4a4a55; }
+
+  /* ── Leyenda del choropleth ──────────────────────────────────── */
+  .rampa { display: flex; height: 10px; border-radius: 3px; overflow: hidden; margin-bottom: 5px; }
+  .rampa div { flex: 1; }
+  .rampa-labels {
+    display: flex; justify-content: space-between;
+    font-size: 0.7rem; color: var(--tenue);
+  }
+
+  .nota { font-size: 0.72rem; color: var(--tenue); line-height: 1.5; }
+
+  /* ── Tooltip ─────────────────────────────────────────────────── */
+  .maplibregl-popup-content {
+    background: #17171b; color: var(--texto);
+    border: 1px solid var(--borde); border-radius: 7px;
+    padding: 11px 13px; font-size: 0.8rem; line-height: 1.5;
+    box-shadow: 0 6px 22px rgba(0,0,0,0.55);
+    max-width: 270px;
+  }
+  .maplibregl-popup-tip { display: none; }
+  .tt-nombre { font-weight: 600; margin-bottom: 3px; }
+  .tt-distrito { color: var(--tenue); font-size: 0.75rem; margin-bottom: 8px; }
+  .tt-estado { font-weight: 600; margin-bottom: 3px; }
+  .tt-dato { color: var(--tenue); }
+
+  /* ── Estado de carga ─────────────────────────────────────────── */
+  #carga {
+    position: absolute; inset: 0; z-index: 5;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--fondo); font-size: 0.9rem; color: var(--tenue);
+  }
+  #carga.error { color: #FF6B6B; padding: 2rem; text-align: center; }
+
+  @media (max-width: 720px) {
+    #panel {
+      position: relative; width: 100%; height: auto;
+      bottom: auto; border-right: none; border-bottom: 1px solid var(--borde);
+    }
+    #mapa { position: relative; height: 65vh; inset: auto; }
+    body { overflow-y: auto; }
+  }
+</style>
+</head>
+<body>
+
+<div id="mapa"></div>
+
+<div id="panel">
+  <h1>Monitor de cobertura de observación</h1>
+  <p class="sub">Lima Metropolitana · <span id="actualizado">—</span></p>
+
+  <div class="seccion">
+    <h2>Avance global</h2>
+    <div id="global">—</div>
+    <div id="global-sub">turnos cubiertos</div>
+    <div id="contadores"></div>
+  </div>
+
+  <div class="seccion">
+    <h2>Filtrar por distrito</h2>
+    <select id="filtro"><option value="">Todos los distritos</option></select>
+  </div>
+
+  <div class="seccion">
+    <h2>Cobertura por distrito</h2>
+    <div class="rampa" id="rampa"></div>
+    <div class="rampa-labels"><span>0%</span><span>100%</span></div>
+  </div>
+
+  <div class="seccion">
+    <p class="nota">
+      Cada punto es un local de votación. El color indica si sus mesas tienen
+      observadores asignados en ambos turnos. Los datos se actualizan desde la
+      hoja de coordinación; refresca la página para ver el avance.
+    </p>
+  </div>
+
+  <div id="pie">
+    <strong>ACTransparencia.monitoreo</strong><br>
+    Datos agregados por local y por distrito. Esta página no publica nombres,
+    documentos de identidad, teléfonos ni números de mesa.
+  </div>
+</div>
+
+<div id="carga">Cargando datos…</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════
+//  Monitor de cobertura de observación electoral — Lima
+//
+//  Lee tres archivos del propio repositorio y dibuja el mapa:
+//    data/locales.csv                    -> puntos (lo actualiza el Sheet)
+//    data/mapa_distritos.csv             -> ratios (lo actualiza el Sheet)
+//    data/lima_callao_distritos.geojson  -> geometría (estático)
+//
+//  El join entre geometría y ratios se hace AQUÍ, en el navegador.
+//  Por eso el Sheet solo necesita empujar dos archivos pequeños y nunca
+//  hace falta correr Python para actualizar el mapa.
+// ══════════════════════════════════════════════════════════════════════
+
+// ── Contrato de colores (paleta S7) ───────────────────────────────────
+const COLORES = {
+  CUBIERTO:    '#00AF5A',
+  EXCEDENTE:   '#00A0F8',
+  NO_CUBIERTO: '#FF0000',
+  PARCIAL:     '#FFEC05'
+};
+const ORDEN_ESTADOS = ['NO_CUBIERTO', 'PARCIAL', 'CUBIERTO', 'EXCEDENTE'];
+const ETIQUETAS = {
+  NO_CUBIERTO: 'Sin cobertura',
+  PARCIAL:     'Cobertura parcial',
+  CUBIERTO:    'Cubierto',
+  EXCEDENTE:   'Con excedente'
+};
+
+// Rampa Purples de ColorBrewer, 6 pasos (misma que el choropleth de Kepler).
+const RAMPA = ['#FCFBFD', '#E2E1EF', '#B6B5D8', '#8782BC', '#61409B', '#3F007D'];
+
+// Escala FIJA 0–1, no ajustada a los datos.
+// Decisión deliberada: con escala automática, un mapa con 0% de cobertura
+// y otro con 100% se verían idénticos (ambos uniformes). Con escala fija,
+// el color significa siempre lo mismo y el avance se puede comparar entre días.
+const CORTES = [0.167, 0.333, 0.5, 0.667, 0.833];
+
+// ── Utilidades ────────────────────────────────────────────────────────
+
+/** Parser CSV mínimo que respeta comillas dobles (los nombres de local
+ *  pueden contener comas). Devuelve un array de objetos. */
+function parseCSV(texto) {
+  const lineas = texto.trim().split(/\r?\n/);
+  const parseLinea = (linea) => {
+    const campos = [];
+    let actual = '', enComillas = false;
+    for (let i = 0; i < linea.length; i++) {
+      const c = linea[i];
+      if (c === '"') {
+        if (enComillas && linea[i + 1] === '"') { actual += '"'; i++; }
+        else enComillas = !enComillas;
+      } else if (c === ',' && !enComillas) {
+        campos.push(actual); actual = '';
+      } else {
+        actual += c;
+      }
+    }
+    campos.push(actual);
+    return campos;
+  };
+  const cabecera = parseLinea(lineas[0]).map(h => h.trim());
+  return lineas.slice(1).map(linea => {
+    const campos = parseLinea(linea);
+    const obj = {};
+    cabecera.forEach((h, i) => obj[h] = (campos[i] ?? '').trim());
+    return obj;
+  });
+}
+
+/** Descarga un archivo del repo evitando la caché de GitHub Pages.
+ *  Sin esto, un F5 podría devolver datos viejos hasta 10 minutos. */
+async function traer(ruta) {
+  const r = await fetch(`${ruta}?v=${Date.now()}`, { cache: 'no-store' });
+  if (!r.ok) throw new Error(`No se pudo cargar ${ruta} (HTTP ${r.status})`);
+  return r;
+}
+
+// ── Arranque ──────────────────────────────────────────────────────────
+let mapa, locales = [], distritoActivo = '';
+let ultimoModificado = null;   // cabecera Last-Modified de data/locales.csv
+
+/**
+ * fechaDeDatos(lastModified) — que poner en "actualizado".
+ *
+ * POR QUE NO `new Date()`:
+ * hasta S15 esta etiqueta usaba la fecha del navegador, asi que el mapa decia
+ * "actualizado hoy" para siempre, incluso con datos congelados hace semanas.
+ * Era peor que no tener fecha: un mapa muerto se veia igual que uno vivo y
+ * ademas lo afirmaba. P-10 confirmo que el equipo mira esto sin nadie al lado.
+ *
+ * De donde sale ahora: la cabecera `Last-Modified` con que GitHub Pages sirve
+ * `data/locales.csv`. Es decir, cuando se PUBLICO el archivo. Honesto y sin
+ * coste: no hace falta empujar un archivo extra ni un commit mas.
+ *
+ * Limite conocido, dicho aqui para que nadie lo descubra por sorpresa: Pages
+ * refresca esa cabecera en cada despliegue, asi que un push que solo cambie
+ * `index.html` tambien la mueve sin que haya datos nuevos. La regla de "no
+ * empujar si el contenido no cambio" mantiene los despliegues atados a cambios
+ * de datos, que es lo que hace fiable esta fecha.
+ *
+ * Y si la cabecera no viene, se dice que no se sabe. Nunca se inventa.
+ */
+function fechaDeDatos(lastModified) {
+  if (!lastModified) return { texto: 'sin fecha de publicación', viejo: true };
+  const d = new Date(lastModified);
+  if (isNaN(d.getTime())) return { texto: 'sin fecha de publicación', viejo: true };
+
+  const fecha = d.toLocaleDateString('es-PE', { day: 'numeric', month: 'long', year: 'numeric' });
+  const hora  = d.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' });
+  const dias  = Math.floor((Date.now() - d.getTime()) / 86400000);
+
+  let texto = `datos del ${fecha}, ${hora}`;
+  if (dias >= 1) texto += dias === 1 ? ' · hace 1 día' : ` · hace ${dias} días`;
+  // A partir de 3 dias se resalta: con captura progresiva hasta el 4 de octubre,
+  // tres dias sin publicar significa que algo dejo de correr.
+  return { texto: texto, viejo: dias >= 3 };
+}
+
+async function iniciar() {
+  let csvLocales, csvDistritos, geoDistritos;
+  try {
+    // Se conserva la Response de locales.csv para leer su `Last-Modified`.
+    // Antes se hacia .then(r => r.text()) directo y la cabecera se perdia; de
+    // ahi que la fecha del panel saliera de new Date(), o sea del reloj de
+    // quien mira. Ver la nota de fechaDeDatos().
+    const [rLocales, rDistritos, rGeo] = await Promise.all([
+      traer('data/locales.csv'),
+      traer('data/mapa_distritos.csv'),
+      traer('data/lima_callao_distritos.geojson')
+    ]);
+    ultimoModificado = rLocales.headers.get('Last-Modified');
+    [csvLocales, csvDistritos, geoDistritos] = await Promise.all([
+      rLocales.text(), rDistritos.text(), rGeo.json()
+    ]);
+  } catch (e) {
+    const caja = document.getElementById('carga');
+    caja.className = 'error';
+    caja.textContent = 'No se pudieron cargar los datos. ' + e.message;
+    return;
+  }
+
+  // 1. Locales -> puntos GeoJSON
+  locales = parseCSV(csvLocales).filter(f => f.LAT && f.LONG);
+  const puntos = {
+    type: 'FeatureCollection',
+    features: locales.map(f => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [parseFloat(f.LONG), parseFloat(f.LAT)] },
+      properties: {
+        NOMBRE_LOCAL:      f.NOMBRE_LOCAL,
+        DISTRITO:          f.DISTRITO,
+        ESTADO_LOCAL:      f.ESTADO_LOCAL,
+        NUM_MESAS_LOCAL:   +f.NUM_MESAS_LOCAL,
+        TURNOS_REQUERIDOS: +f.TURNOS_REQUERIDOS,
+        TURNOS_CUBIERTOS:  +f.TURNOS_CUBIERTOS,
+        EXCEDENTE_GRADO:   +f.EXCEDENTE_GRADO
+      }
+    }))
+  };
+
+  // 2. JOIN: inyectar el ratio de cada distrito en su polígono.
+  //    Esto es lo que antes hacía enrich_geojson.py en Python.
+  const ratios = {};
+  parseCSV(csvDistritos).forEach(f => {
+    ratios[f.DISTRITO.trim().toUpperCase()] = parseFloat(f.RATIO_DISTRITO);
+  });
+  geoDistritos.features.forEach(f => {
+    const nombre = (f.properties.distrito || '').trim().toUpperCase();
+    const r = ratios[nombre];
+    // Fuera de muestra (Callao, litoral sur) -> sin dato, se dibuja gris.
+    f.properties.RATIO_DISTRITO = (r === undefined || isNaN(r)) ? null : r;
+    f.properties.EN_MUESTRA = (r !== undefined && !isNaN(r));
+  });
+
+  // 3. Mapa
+  mapa = new maplibregl.Map({
+    container: 'mapa',
+    // Basemap oscuro de CARTO: gratuito, sin token. Es el mismo
+    // "dark matter" que usabas en Kepler.
+    style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+    center: [-77.039, -12.074],
+    zoom: 9.4,
+    attributionControl: { compact: true }
+  });
+  mapa.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+  mapa.addControl(new maplibregl.ScaleControl({ maxWidth: 110, unit: 'metric' }), 'bottom-right');
+
+  mapa.on('load', () => {
+    // ── Capa 1: choropleth de distritos ──
+    mapa.addSource('distritos', { type: 'geojson', data: geoDistritos });
+
+    mapa.addLayer({
+      id: 'distritos-relleno',
+      type: 'fill',
+      source: 'distritos',
+      paint: {
+        'fill-color': [
+          'case',
+          ['!', ['get', 'EN_MUESTRA']], '#3a3a40',   // fuera de muestra: gris
+          ['step', ['get', 'RATIO_DISTRITO'],
+            RAMPA[0],
+            CORTES[0], RAMPA[1],
+            CORTES[1], RAMPA[2],
+            CORTES[2], RAMPA[3],
+            CORTES[3], RAMPA[4],
+            CORTES[4], RAMPA[5]
+          ]
+        ],
+        'fill-opacity': 0.4
+      }
+    });
+
+    mapa.addLayer({
+      id: 'distritos-borde',
+      type: 'line',
+      source: 'distritos',
+      paint: {
+        'line-color': 'rgb(118,183,61)',   // verde del contrato S7
+        'line-width': 0.5,
+        'line-opacity': 0.8
+      }
+    });
+
+    // ── Capa 1b: nombre de cada distrito ──
+    // Solo los 40 de la muestra. MapLibre calcula solo el punto interior
+    // del polígono, así que no hace falta precalcular centroides.
+    mapa.addLayer({
+      id: 'distritos-etiqueta',
+      type: 'symbol',
+      source: 'distritos',
+      filter: ['==', ['get', 'EN_MUESTRA'], true],
+      layout: {
+        'text-field': ['get', 'distrito'],
+        'text-font': ['Open Sans Regular', 'Noto Sans Regular'],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 9, 9, 12, 13, 15, 16],
+        'text-letter-spacing': 0.06,
+        'text-max-width': 9,
+        'text-padding': 5,
+        'text-allow-overlap': false   // se ocultan solas si no caben
+      },
+      paint: {
+        'text-color': '#d6d6dd',
+        'text-halo-color': '#0b0b0d',
+        'text-halo-width': 1.5,
+        'text-opacity': 0.9
+      }
+    });
+
+    // ── Capa 2: locales ──
+    mapa.addSource('locales', { type: 'geojson', data: puntos });
+
+    mapa.addLayer({
+      id: 'locales-punto',
+      type: 'circle',
+      source: 'locales',
+      paint: {
+        'circle-color': [
+          'match', ['get', 'ESTADO_LOCAL'],
+          'CUBIERTO',    COLORES.CUBIERTO,
+          'EXCEDENTE',   COLORES.EXCEDENTE,
+          'NO_CUBIERTO', COLORES.NO_CUBIERTO,
+          'PARCIAL',     COLORES.PARCIAL,
+          '#888888'
+        ],
+        // El radio crece con el zoom para que a nivel ciudad se lean
+        // y de cerca sigan siendo clicables.
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 5, 12, 9, 15, 16],
+        'circle-stroke-color': '#261A10',   // outline del contrato S7
+        'circle-stroke-width': 1.5,
+        'circle-opacity': 0.95
+      }
+    });
+
+    configurarTooltip();
+    construirFiltro();
+    actualizarResumen();
+    construirLeyenda();
+    const marca = fechaDeDatos(ultimoModificado);
+    const elMarca = document.getElementById('actualizado');
+    elMarca.textContent = marca.texto;
+    elMarca.classList.toggle('viejo', marca.viejo);
+    document.getElementById('carga').remove();
+  });
+}
+
+// ── Tooltip ───────────────────────────────────────────────────────────
+function configurarTooltip() {
+  const popup = new maplibregl.Popup({
+    closeButton: false, closeOnClick: false, offset: 12
+  });
+
+  mapa.on('mousemove', 'locales-punto', (e) => {
+    mapa.getCanvas().style.cursor = 'pointer';
+    const p = e.features[0].properties;
+    const color = COLORES[p.ESTADO_LOCAL] || '#888';
+
+    // Opción B del handoff: hablar en turnos, no en ratios.
+    // "3 de 4 turnos" le dice a la coordinadora a quién llamar;
+    // "0.75" no le dice nada.
+    let detalle = `${p.TURNOS_CUBIERTOS} de ${p.TURNOS_REQUERIDOS} turnos cubiertos`;
+    if (p.EXCEDENTE_GRADO > 0) {
+      detalle += ` · ${p.EXCEDENTE_GRADO} mesa${p.EXCEDENTE_GRADO > 1 ? 's' : ''} con excedente`;
+    }
+
+    popup.setLngLat(e.lngLat).setHTML(`
+      <div class="tt-nombre">${p.NOMBRE_LOCAL}</div>
+      <div class="tt-distrito">${p.DISTRITO}</div>
+      <div class="tt-estado" style="color:${color}">${ETIQUETAS[p.ESTADO_LOCAL] || p.ESTADO_LOCAL}</div>
+      <div class="tt-dato">${detalle}</div>
+      <div class="tt-dato">${p.NUM_MESAS_LOCAL} mesa${p.NUM_MESAS_LOCAL > 1 ? 's' : ''} de sufragio</div>
+    `).addTo(mapa);
+  });
+
+  mapa.on('mouseleave', 'locales-punto', () => {
+    mapa.getCanvas().style.cursor = '';
+    popup.remove();
+  });
+}
+
+// ── Filtro por distrito ───────────────────────────────────────────────
+function construirFiltro() {
+  const select = document.getElementById('filtro');
+  [...new Set(locales.map(f => f.DISTRITO))].sort().forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d; opt.textContent = d;
+    select.appendChild(opt);
+  });
+
+  select.addEventListener('change', (e) => {
+    distritoActivo = e.target.value;
+
+    mapa.setFilter('locales-punto',
+      distritoActivo ? ['==', ['get', 'DISTRITO'], distritoActivo] : null);
+
+    actualizarResumen();
+
+    // Encuadrar el distrito seleccionado
+    const visibles = locales.filter(f => !distritoActivo || f.DISTRITO === distritoActivo);
+    if (visibles.length) {
+      const b = new maplibregl.LngLatBounds();
+      visibles.forEach(f => b.extend([parseFloat(f.LONG), parseFloat(f.LAT)]));
+      mapa.fitBounds(b, { padding: { top: 60, bottom: 60, left: 380, right: 60 }, maxZoom: 14 });
+    }
+  });
+}
+
+// ── Contadores ────────────────────────────────────────────────────────
+function actualizarResumen() {
+  const visibles = locales.filter(f => !distritoActivo || f.DISTRITO === distritoActivo);
+
+  const conteo = { NO_CUBIERTO: 0, PARCIAL: 0, CUBIERTO: 0, EXCEDENTE: 0 };
+  let req = 0, cub = 0;
+  visibles.forEach(f => {
+    if (conteo[f.ESTADO_LOCAL] !== undefined) conteo[f.ESTADO_LOCAL]++;
+    req += +f.TURNOS_REQUERIDOS;
+    cub += Math.min(+f.TURNOS_CUBIERTOS, +f.TURNOS_REQUERIDOS);   // topeado, igual que el contrato
+  });
+
+  const pct = req > 0 ? Math.round((cub / req) * 100) : 0;
+  document.getElementById('global').textContent = pct + '%';
+  document.getElementById('global-sub').textContent =
+    `${cub.toLocaleString('es-PE')} de ${req.toLocaleString('es-PE')} turnos · ` +
+    `${visibles.length} local${visibles.length === 1 ? '' : 'es'}`;
+
+  document.getElementById('contadores').innerHTML = ORDEN_ESTADOS.map(estado => `
+    <div class="fila">
+      <span class="punto" style="background:${COLORES[estado]}"></span>
+      <span class="etiqueta">${ETIQUETAS[estado]}</span>
+      <span class="valor">${conteo[estado]}</span>
+    </div>
+  `).join('');
+}
+
+// ── Leyenda ───────────────────────────────────────────────────────────
+function construirLeyenda() {
+  document.getElementById('rampa').innerHTML =
+    RAMPA.map(c => `<div style="background:${c}"></div>`).join('');
+}
+
+iniciar();
+</script>
+</body>
+</html>
