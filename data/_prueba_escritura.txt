@@ -1,2 +1,0 @@
-Prueba de escritura del Sheet MOTOR — 2026-08-27 22:13:48
-Este archivo se crea y se borra en la misma corrida. Si lo ves en el repo, algo se interrumpió a la mitad: se puede borrar sin consecuencia.
